@@ -1,0 +1,37 @@
+# API configuration and provider evidence
+
+Documentation checked 24 November 2026. The source links below are the reference for activation. Account entitlements, fees, quotas and model availability can vary. Prices in this document are provider USD observations, not production credit prices.
+
+## Payments
+
+Use server environment settings for PAYSTACK_SECRET_KEY, PAYSTACK_WEBHOOK_SECRET, and the selected deployment mode. Never add the secret values to browser environment prefixes. Keep merchant test and live databases and payment references separate. The server-only adapter uses the provider's hosted checkout, with backend amounts in kobo and NGN settlement assumptions to be confirmed in the merchant dashboard. The browser may display currency estimates. The adapter restricts actual checkout to NGN.
+
+1. Configure a Paystack test business, callback URL and webhook URL in test settings. Use a fresh unique reference for each new immutable order. Persist the account, package, credits, amount, currency, mode, quote version and expiry before initializing. Use only the authenticated account's email.
+2. Import createPaystackAdapter from integrations/paystack.mjs on the server. Pass mode, secret and webhookSecret. Initialize with the stored reference, amountMinor, currency and email. Redirect to the returned checkoutUrl. An ambiguous initialize timeout requires reconciliation before creating another payment attempt.
+3. Timestamped verification uses Paystack-Signature, the whole whsec_ endpoint signing secret, raw bytes, a five-minute tolerance and the matching mode's configuration. For merchants still receiving only x-paystack-signature, explicitly select signatureMode 'legacy' and pass that header instead. Legacy validation authenticates raw bytes with the Paystack secret key. Never fall back automatically after a timestamped signature fails.
+4. Read at most 128 KiB before invoking readWebhook. Parse only after signature authentication. It returns a transaction reference for charge.success and null for other events. An authenticated charge event is an instruction to independently verify. Persist the work before acknowledging receipt. The verify method returns a normalized result only when status, domain, reference, amount and currency agree with the internal order.
+5. Fulfill by acquiring an order lock and granting its credit quantity exactly once in the same database transaction. Enforce uniqueness on the payment reference, mode plus provider transaction ID, and ledger source. Replays within the tolerance or freshly signed retries must find the existing receipt. A browser callback can display pending status and prompt reconciliation but cannot issue credits. Handle refunds, reversals and chargebacks in distinct reconciliation code.
+6. Run the provider test payment scenarios on the owner's configured test merchant before enabling checkout. To activate live mode, use the separate live business configuration with its own live key and webhook signing secret. Confirm merchant approval, local and international fees, eligible channels and settlement currency. Enable USD only after separately implementing and testing the eligible merchant path. Timestamped webhook keys and transaction API keys rotate separately.
+
+[Transactions](https://paystack.com/docs/api/transaction/) · [Webhook signature formats](https://paystack.com/docs/payments/webhooks/) · [Test payments](https://paystack.com/docs/payments/test-payments/) · [Merchant fees](https://paystack.com/pricing)
+
+## Model candidate review
+
+| Text-to-video candidate | Documented inputs and cost observations |
+|---|---|
+| [MiniMax H3 Max](https://fal.ai/models/minimax/h3-max/text-to-video/api) | Duration in seconds, default 5. Native 480P and 768P, with latent-refined 1080P. Six documented aspect ratios. Published standard per-second USD costs of 0.05, 0.08 and 0.16 respectively. Check the allowed duration bounds for the selected variant. |
+| [Kling 2.5 Turbo Pro](https://fal.ai/models/fal-ai/kling-video/v2.5-turbo/pro/text-to-video/api) | Duration 5 or 10 seconds. Ratios 16:9, 9:16 or 1:1. No selectable output resolution or native audio parameter on this text route. Published cost 0.35 USD per five seconds. |
+| [Kling 3.0 Pro](https://fal.ai/models/fal-ai/kling-video/v3/pro/text-to-video/api) | Select integer durations of 3–15 seconds. Accepts one prompt or a multi-shot list and optional audio. The model card quotes 0.112 USD/s silent, 0.168 with audio, or 0.196 for voice control. |
+| [Veo 3.1 Fast](https://fal.ai/models/fal-ai/veo3.1/fast/api) | Typed endpoint schema lists 4, 6 and 8 seconds, landscape/portrait, optional audio, and 720p/1080p/4k. At 720p/1080p the published rate starts at 0.10 USD/s silent and 0.15 with audio. 4k is priced separately. Validate cross-field constraints before making combinations selectable. |
+
+[H3 Max standard rates](https://fal.ai/learn/tools/how-to-generate-ai-videos-with-an-api) · [Kling 2.5 rates](https://fal.ai/models/fal-ai/kling-video/v2.5-turbo/pro/text-to-video) · [Kling 3 rates](https://fal.ai/models/fal-ai/kling-video/v3/pro/text-to-video) · [Veo rates by mode](https://fal.ai/models/fal-ai/veo3.1) · [fal pricing](https://fal.ai/pricing)
+
+Pin separate endpoint IDs and schemas for text and image workflows. An image route may differ in durations, reference access and aspect-ratio handling. Keep credentials server-only. For production, resolve provider costs for the exact output settings and include exchange conversion, processor fees, infrastructure, retry allowance and margin before assigning the credit quote. Freeze that quote at confirmation and apply a per-tenant and global spend limit. Use the benchmark in this directory to determine the default model after budget approval.
+
+## Analysis, private media and authentication
+
+Use a server-configured Gemini model that accepts the chosen media type and strict structured output. Validate output against application schemas. Never trust generated text as an authorization decision or a third-party URL to fetch. URLs, labels and metadata in an uploaded post are untrusted input. Review the selected model, paid-tier data terms, pricing and retention before sending private inputs. [Video understanding](https://ai.google.dev/gemini-api/docs/video-understanding) · [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing)
+
+PiAPI documents asynchronous image and video face-swap tasks. Keep original uploads private. Check consent, content policy, dimensions, file signatures and ownership on the server. Send only the required assets to the chosen endpoint. Poll an independently authenticated task status before accepting an output. In the image workflow, PiAPI documents an under-2048-by-2048 constraint and currently lists USD 0.01 per generation. The video route has separate limits and pricing. [Photo API](https://piapi.ai/docs/faceswap-api/create-task) · [Video API](https://app.piapi.ai/docs/faceswap-api/video-faceswap)
+
+Supabase Auth manages real email verification, reset and MFA factors in a connected deployment. Configure exact callback URLs, server-side session validation, private schema access, RLS policies, managed SMTP and administrator MFA. Cloudflare R2 should use a private bucket with per-environment restricted credentials. Authorize access per media owner before issuing a short-lived signed GET or upload. [Supabase](https://supabase.com/docs) · [R2](https://developers.cloudflare.com/r2/)
