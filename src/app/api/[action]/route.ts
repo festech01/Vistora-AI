@@ -19,14 +19,14 @@ const imageReady=()=>videoReady()&&env.IMAGE_COMMISSIONED==='true'&&[env.KLING_I
 const checkoutReady=()=>false
 const json=(value:unknown,status=200)=>NextResponse.json(value,{status,headers:{'Cache-Control':'private, no-store'}})
 type Context={params:Promise<{action:string}>}
-async function account(){const jwt=(await cookies()).get('__Host-vistora')?.value;if(!jwt)return null;const {data}=await client().auth.getUser(jwt);return data.user?.email_confirmed_at?data.user:null}
+async function account(){const jwt=(await cookies()).get('__Host-vistora')?.value;if(!jwt)return null;const {data}=await client().auth.getUser(jwt);return data.user?.email_confirmed_at && data.user.app_metadata?.studio_paused!==true?data.user:null}
 export async function GET(req:NextRequest,ctx:Context){const {action}=await ctx.params
 if(action==='status')return json({auth:authReady()})
 if(!['account','voices'].includes(action)||!authReady())return json({error:'Account unavailable'},401)
 try{const user=await account();if(!user)return json({error:'Sign in first'},401);const db=client(true);
 if(action==='voices'){const list=await db.from('studio_voice_orders').select('id,input,created_at').eq('owner',user.id).eq('state','ready').order('created_at',{ascending:false}).limit(30);if(list.error)throw Error();return json(list.data.map(v=>({id:v.id,title:v.input.text.slice(0,65),format:v.input.format})))}
 const [ledger,jobs]=await Promise.all([db.from('studio_ledger').select('delta').eq('owner',user.id),db.from('studio_jobs').select('id,state').eq('owner',user.id).order('created_at',{ascending:false}).limit(50)]);if(ledger.error||jobs.error)throw Error();let rates={};try{if(Date.parse(env.FX_VALID_UNTIL||'')>Date.now())rates=JSON.parse(env.FX_NGN_RATES||'{}')}catch{}
-return json({offers:packages.map((credits,i)=>({credits,name:tiers[i],naira:packageAmount(credits)/100})),rates,payments:checkoutReady(),voice:voiceReady(),image:imageReady(),video:videoReady(),email:user.email,balance:ledger.data.reduce((s,r)=>s+r.delta,0),jobs:jobs.data})}catch{return json({error:'Account service unavailable'},503)}}
+return json({offers:packages.map((credits,i)=>({credits,name:tiers[i],naira:packageAmount(credits)/100})),rates,payments:checkoutReady(),voice:voiceReady(),image:imageReady(),video:videoReady(),email:user.email,displayName:user.user_metadata?.display_name||'',balance:ledger.data.reduce((s,r)=>s+r.delta,0),jobs:jobs.data})}catch{return json({error:'Account service unavailable'},503)}}
 export async function POST(req:NextRequest,ctx:Context){const {action}=await ctx.params
 if(!authReady())return json({error:'Studio services are awaiting configuration.'},503)
 if(action!=='webhook'&&req.headers.get('origin')!==req.nextUrl.origin)return json({error:'Origin denied'},403)
@@ -35,7 +35,23 @@ if(+(req.headers.get('content-length')||0)>maxBytes)return json({error:'Request 
 try{const bytes=await req.arrayBuffer();if(bytes.byteLength>maxBytes)return json({error:'Request too large'},413)
 if(action==='webhook'){const adapter=pay();let event;try{event=adapter.readWebhook(Buffer.from(bytes),req.headers.get(env.PAYSTACK_SIGNATURE_MODE==='legacy'?'x-paystack-signature':'paystack-signature'))}catch{return json({error:'Invalid notification'},400)}if(!event)return json({received:true});const db=client(true);const {data:o,error}=await db.from('studio_orders').select('*').eq('id',event.reference).single();if(error||!o)throw Error();const tx=await adapter.verify({reference:o.id,amountMinor:o.amount,currency:o.currency,email:''});const settled=await db.rpc('settle_studio_payment',{p_order:o.id,p_transaction:tx.providerTransactionId});if(settled.error)throw Error();return json({received:true})}
 const data=JSON.parse(new TextDecoder().decode(bytes))
-if(action==='signup'||action==='login'){if(typeof data.email!=='string'||typeof data.password!=='string'||data.password.length<10||data.password.length>256)return json({error:'Enter a valid email and password of at least 10 characters.'},400);const auth=client().auth;const creds={email:data.email,password:data.password};if(action==='signup'){const r=await auth.signUp(creds);if(r.error)throw Error();return json({received:true})}const r=await auth.signInWithPassword(creds);if(r.error||!r.data.session||!r.data.user.email_confirmed_at)return json({error:'Check your credentials and verify your email.'},401);(await cookies()).set('__Host-vistora',r.data.session.access_token,{httpOnly:true,secure:true,path:'/',sameSite:'lax',maxAge:r.data.session.expires_in});return json({signedIn:true})}
+if(action==='signup'||action==='login'){
+ const email=typeof data.email==='string'?data.email.trim():''
+ const name=typeof data.name==='string'?data.name.trim():''
+ if(!email||email.length>254||typeof data.password!=='string'||!data.password.length||data.password.length>256||(action==='signup'&&(data.password.length<10||name.length>60)))return json({error:'Check your email and password. New passwords need at least 10 characters.'},400)
+ const auth=client().auth
+ const credentials={email,password:data.password}
+ const result=action==='signup'?await auth.signUp({...credentials,options:{data:{display_name:name},emailRedirectTo:req.nextUrl.origin}}):await auth.signInWithPassword(credentials)
+ if(result.error){
+ if(result.error.status===429)return json({error:'Too many requests. Please wait before trying again.'},429)
+ return json({error:action==='signup'?'Could not create the account. Check your details and try again.':'Check your email and password, and confirm your email before signing in.'},action==='signup'?400:401)
+ }
+ if(action==='signup'&&!result.data.session)return json({received:true})
+ if(!result.data.session||!result.data.user?.email_confirmed_at)return json({error:'Confirm your email before signing in.'},401)
+ if(result.data.user.app_metadata?.studio_paused===true)return json({error:'Your studio access is paused. Contact the owner.'},403)
+ ;(await cookies()).set('__Host-vistora',result.data.session.access_token,{httpOnly:true,secure:true,path:'/',sameSite:'lax',maxAge:result.data.session.expires_in})
+ return json({signedIn:true})
+}
 if(action==='logout'){(await cookies()).delete('__Host-vistora');return json({signedOut:true})}
 const user=await account();if(!user)return json({error:'Verified sign-in required'},401)
 if(action==='voicedownload'){const db=client(true);const r=await db.from('studio_voice_orders').select('id,input').eq('id',data.id).eq('owner',user.id).eq('state','ready').single();if(r.error)return json({error:'Recording unavailable.'},404)
