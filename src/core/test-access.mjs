@@ -1,0 +1,5 @@
+import {createHmac,timingSafeEqual} from 'node:crypto'
+export const features=['prompt','voice','video','photo']
+export function equal(a,b){if(typeof a!=='string'||typeof b!=='string'||!a||!b)return false;const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y)}
+export function sign(role,id,expiry,secret){if(!secret||secret.length<32)throw Error('Access unavailable');const body=Buffer.from(JSON.stringify({role,id,expiry})).toString('base64url');return body+'.'+createHmac('sha256',secret).update(body).digest('base64url')}
+export function verify(token,secret){try{if(!secret||secret.length<32||typeof token!=='string'||token.length>1200)return null;const [body,mac,...extra]=token.split('.');if(extra.length||!equal(mac,createHmac('sha256',secret).update(body).digest('base64url')))return null;const x=JSON.parse(Buffer.from(body,'base64url').toString());return ['owner','invite','tester'].includes(x.role)&&Number.isFinite(x.expiry)&&x.expiry>Date.now()&&/^[a-zA-Z0-9-]{1,60}$/.test(x.id)?x:null}catch{return null}}

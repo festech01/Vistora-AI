@@ -16,7 +16,7 @@ const pay=()=>createPaystackAdapter({mode:env.PAYSTACK_MODE,secret:env.PAYSTACK_
 // Customer checkout remains closed until the generation pipeline is commissioned.
 const videoReady=()=>authReady()&&env.VIDEO_COMMISSIONED==='true'&&env.VIDEO_WORKER_APPROVED==='true'&&Boolean(env.FAL_KEY)&&Date.parse(env.PRICES_VALID_UNTIL||'')>Date.now()&&[env.KLING_5S_CREDITS,env.KLING_10S_CREDITS].every(x=>Number.isSafeInteger(Number(x))&&Number(x)>0)
 const imageReady=()=>videoReady()&&env.IMAGE_COMMISSIONED==='true'&&[env.KLING_IMAGE_5S_CREDITS,env.KLING_IMAGE_10S_CREDITS].every(x=>Number.isSafeInteger(Number(x))&&Number(x)>0)
-const checkoutReady=()=>videoReady()&&env.PAYMENTS_COMMISSIONED==='true'&&Boolean(env.PAYSTACK_SECRET_KEY)&&env.PAYSTACK_MODE==='live'
+const checkoutReady=()=>false
 const json=(value:unknown,status=200)=>NextResponse.json(value,{status,headers:{'Cache-Control':'private, no-store'}})
 type Context={params:Promise<{action:string}>}
 async function account(){const jwt=(await cookies()).get('__Host-vistora')?.value;if(!jwt)return null;const {data}=await client().auth.getUser(jwt);return data.user?.email_confirmed_at?data.user:null}
