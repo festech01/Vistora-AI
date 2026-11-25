@@ -5,7 +5,7 @@ import sharp from 'sharp'
 import {equal,sign,verify,features} from '../../../../core/test-access.mjs'
 import {renderSpeech,speechInput} from '../../../../../integrations/speech.mjs'
 import {directPrompt} from '../../../../../integrations/gemini.mjs'
-import {createVideoProvider} from '../../../../../integrations/fal.mjs'
+import {createVideoProvider,VideoProviderError} from '../../../../../integrations/fal.mjs'
 export const dynamic='force-dynamic'
 export const maxDuration=120
 const env=process.env
@@ -30,9 +30,22 @@ export async function POST(req:NextRequest,ctx:Context){
  const body=await req.text();if(body.length>1000000)return reply({error:'File too large.'},413);const d=JSON.parse(body)
  if(action==='logout'){const r=reply({ok:true});r.cookies.delete(d.owner===true?'__Host-vistora-owner':cookie);return r}
  if(action==='owner'){if(!equal(d.code,env.VISTORA_OWNER_ACCESS))return reply({error:'Incorrect owner code.'},401);return session('owner',ownerId(),Date.now()+4*3600000)}
- const token=verify(action==='redeem'?d.code:req.cookies.get(['manage','invite','revoke'].includes(action)?'__Host-vistora-owner':cookie)?.value,env.VISTORA_SESSION_SECRET)
+ const token=verify(action==='redeem'?d.code:req.cookies.get(['manage','invite','revoke','videoReview'].includes(action)?'__Host-vistora-owner':cookie)?.value,env.VISTORA_SESSION_SECRET)
  if(!token)return reply({error:'Sign in to continue.'},401)
  if(token.role==='owner'&&token.id===ownerId()&&action!=='redeem'){
+ if(action==='videoReview'&&typeof d.id==='string'&&/^[a-f0-9-]{36}$/.test(d.id)){
+ const claim=await read('claims/'+d.id+'/video')
+ if(!claim)return reply({message:'This pass has no video attempt.'})
+ const result=await read('results/'+d.id+'/video')
+ const when=new Date(claim.time).toISOString()
+ if(result?.ref)return reply({message:'Submitted to fal. Request ID '+result.ref+'. Use Check result in the test studio.'})
+ const saved=result?.reason?result.message+' ':''
+ try{
+ const matches=await createVideoProvider(env.FAL_KEY).history(claim.time)
+ const details=matches.length?'Nearby fal requests: '+matches.map((m:{id:string,status:number|null})=>m.id+' ('+(m.status??'pending')+')').join(', ')+'. Match the prompt in fal before using a result.':'No nearby request appeared in the available history. Check Recent History in fal before starting another test.'
+ return reply({message:saved+'Video attempt at '+when+'. '+details})
+ }catch(e){return reply({message:saved+'Video attempt at '+when+'. '+(e instanceof VideoProviderError?e.message:'Request history is unavailable.')+' Check Recent History in the fal dashboard.'})}
+ }
  if(action==='manage'){
  const rows=await list({prefix:root+'passes/',limit:1000});const passes=await Promise.all(rows.blobs.slice(-100).map(async b=>{const p=await read(b.pathname.slice(root.length));return p?{...p,revoked:Boolean(await read('revoked/'+p.id))}:null}));return reply({passes:passes.filter(Boolean),configured:configured()})
  }
@@ -61,7 +74,9 @@ export async function POST(req:NextRequest,ctx:Context){
  else if(f==='prompt'){const p=await directPrompt({key:env.GEMINI_API_KEY,model:env.GEMINI_MODEL||'gemini-3.5-flash-lite',concept:text,ratio:'16:9',duration:'5'});result={state:'ready',text:p.enhancedPrompt}}
  else if(f==='video'){const ref=await createVideoProvider(env.FAL_KEY).submit({prompt:text,duration:'5',ratio:'16:9'});result={state:'submitted',ref}}
  else{const j=await pi('',{model:'Qubico/image-toolkit',task_type:'multi-face-swap',input:{swap_image:source,target_image:target,swap_faces_index:'0',target_faces_index:'0'}});if(!/^[a-zA-Z0-9-]{1,100}$/.test(j.task_id))throw Error();result={state:'submitted',ref:j.task_id}}
- }catch{result={state:'review',message:'The provider did not return a confirmed result. Ask the owner to review before retrying.'}}
+ }catch(error){if(f==='video'){
+ result={state:'review',reason:error instanceof VideoProviderError?'provider':'unconfirmed',message:error instanceof VideoProviderError?error.message:'Vistora did not receive a video request ID. The owner can check this attempt under Issued passes.'}
+ }else result={state:'review',message:'The provider did not return a confirmed result. Ask the owner to review before retrying.'}}
  await write(statusPath(f),result);return reply(result)
  }catch{return reply({error:'The request could not be completed. Please check again.'},503)}
 }
