@@ -7,7 +7,7 @@ async function findPage(dir){
   if(['node_modules','.git','cache','src','public'].includes(entry.name))continue
   const path=join(dir,entry.name)
   if(entry.isDirectory()){const result=await findPage(path);if(result)return result}
-  else if(entry.name.endsWith('.html')){const html=await readFile(path,'utf8');if(html.includes('Where does a shadow go?')&&html.includes('Example videos'))return html}
+  else if(entry.name.endsWith('.html')){const html=await readFile(path,'utf8');if(html.includes('Where does a shadow go?')&&html.includes('Example videos')&&html.includes('Create an account'))return html}
  }
 }
 const page=await findPage(process.cwd())

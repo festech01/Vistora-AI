@@ -9,3 +9,5 @@ The film reel, layered profile and post-layout card illustrations are original g
 ## Where does a shadow go?
 
 The 14 second educational animation, cover image and synthesized mallet melody are original demo assets released under CC0 1.0 Universal. An illustrated presenter demonstrates how moving a light changes the cast shadow of an isometric cube. All motion and audio are authored locally. DejaVu Sans is used for on-screen headings and captions. To rebuild, install Pillow, NumPy, FFmpeg and the system DejaVu Sans fonts, then run `python scripts/render-example.py`.
+
+The website masthead uses the film projector photograph served by Unsplash at https://images.unsplash.com/photo-1440404653325-ab127d49abc1.
