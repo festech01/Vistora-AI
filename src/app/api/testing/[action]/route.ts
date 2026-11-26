@@ -5,6 +5,7 @@ import {customer} from '../../../../core/community'
 import sharp from 'sharp'
 import {equal,sign,verify,features} from '../../../../core/test-access.mjs'
 import {renderSpeech,speechInput} from '../../../../../integrations/speech.mjs'
+import {analyzePost} from '../../../../../integrations/breakdown.mjs'
 import {directPrompt} from '../../../../../integrations/gemini.mjs'
 import {createVideoProvider,VideoProviderError} from '../../../../../integrations/fal.mjs'
 export const dynamic='force-dynamic'
@@ -17,10 +18,10 @@ const root='testing/v1/'
 const ownerId=()=>createHash('sha256').update(env.VISTORA_OWNER_ACCESS||'').digest('hex').slice(0,24)
 async function read(path:string){const r=await get(root+path,{access:'private',useCache:false});if(!r||r.statusCode!==200)return null;return new Response(r.stream).json()}
 async function write(path:string,data:unknown){return put(root+path,JSON.stringify(data),{access:'private',allowOverwrite:false,addRandomSuffix:false,contentType:'application/json'})}
-const configured=()=>({prompt:!!env.GEMINI_API_KEY,voice:!!env.OPENAI_API_KEY,video:!!env.FAL_KEY,photo:!!env.PIAPI_API_KEY})
+const configured=()=>({reverse:!!env.GEMINI_API_KEY,prompt:!!env.GEMINI_API_KEY,voice:!!env.OPENAI_API_KEY,video:!!env.FAL_KEY,photo:!!env.PIAPI_API_KEY})
 function session(role:string,id:string,expiry:number){const r=reply({ok:true,role});r.cookies.set(role==='owner'?'__Host-vistora-owner':cookie,sign(role,id,expiry,env.VISTORA_SESSION_SECRET),{httpOnly:true,secure:true,sameSite:'strict',path:'/',expires:new Date(expiry)});return r}
 async function photo(s:unknown){if(typeof s!=='string'||!/^data:image\/jpeg;base64,[A-Za-z0-9+/]+=*$/.test(s)||s.length>450000)throw Error();return (await sharp(Buffer.from(s.split(',')[1],'base64'),{limitInputPixels:1600000}).rotate().resize({width:900,height:900,fit:'inside',withoutEnlargement:true}).jpeg({quality:80}).toBuffer()).toString('base64')}
-async function pi(path:string,body?:unknown){const r=await fetch('https://api.piapi.ai/api/v1/task'+path,{method:body?'POST':'GET',headers:{'x-api-key':env.PIAPI_API_KEY!,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,redirect:'error',cache:'no-store',signal:AbortSignal.timeout(20000)});if(!r.ok)throw Error();const j=await r.json();if(!j.data)throw Error();return j.data}
+async function pi(path:string,body?:unknown){const r=await fetch('https://api.piapi.ai/api/v1/task'+path,{method:body?'POST':'GET',headers:{'x-api-key':env.PIAPI_API_KEY!,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined,redirect:'error',cache:'no-store',signal:AbortSignal.timeout(20000)});if(!r.ok)throw Error('PiAPI returned HTTP '+r.status+'. Check the PiAPI key and balance.');const j=await r.json();if(!j.data)throw Error();return j.data}
 function resultLink(value:unknown){if(typeof value!=='string')return null;try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password?u.href:null}catch{return null}}
 type Context={params:Promise<{action:string}>}
 export async function POST(req:NextRequest,ctx:Context){
@@ -69,22 +70,30 @@ export async function POST(req:NextRequest,ctx:Context){
  const f=d.feature;if(!pass.features.includes(f))return reply({error:'Your pass does not include this tool.'},403)
  if(action==='audio'&&f==='voice'){const blob=await get(root+'audio/'+pass.id+'.mp3',{access:'private'});return blob?.statusCode===200?new Response(blob.stream,{headers:{...headers,'Content-Type':'audio/mpeg'}}):reply({error:'Recording unavailable.'},404)}
  if(action==='check'&&['video','photo'].includes(f)){const j=await read(statusPath(f));if(!j?.ref)return reply({error:'No submitted job.'},409)
- if(f==='photo'){const result=await pi('/'+encodeURIComponent(j.ref));return reply({state:result.status,url:resultLink(result.output?.image_url??result.output?.image)})}
+ if(f==='photo'){const result=await pi('/'+encodeURIComponent(j.ref));return reply({state:result.status,url:resultLink(result.output?.image_url??result.output?.image??result.output?.image_file_url)})}
  const provider=createVideoProvider(env.FAL_KEY);const s=await provider.status(j.ref);return reply(s.status==='COMPLETED'?{state:s.status,url:resultLink((await provider.result(j.ref)).video?.url)}:{state:s.status})}
  if(action!=='run'||d.confirm!==true)return reply({error:'Confirm this provider test first.'},400)
- const text=typeof d.text==='string'?d.text.trim():'';if(f!=='photo'&&(!text||text.length>500))return reply({error:'Enter up to 500 characters.'},400)
+ const text=typeof d.text==='string'?d.text.trim():'';if(!['photo','reverse'].includes(f)&&(!text||text.length>(f==='voice'?1800:500)))return reply({error:'Check the length of your text.'},400)
  let source,target;if(f==='photo'){if(d.consent!==true)return reply({error:'Permission from both adults is required.'},400);try{source=await photo(d.source);target=await photo(d.target)}catch{return reply({error:'Choose two valid pictures.'},400)}}
- const voice=f==='voice'?speechInput({text,voice:d.voice,tone:'Natural',speed:1,format:'mp3'}):null
+ let screenshot
+ if(f==='reverse'){
+   if(text.length>8000||(!text&&!d.screenshot))return reply({error:'Paste a post or choose a screenshot.'},400)
+   if(d.screenshot){try{screenshot=await photo(d.screenshot)}catch{return reply({error:'Choose a valid screenshot.'},400)}}
+ }
+ let voice
+ if(f==='voice'){try{voice=speechInput({text,voice:d.voice,tone:d.tone||'Natural',speed:d.speed??1,format:'mp3'})}catch{return reply({error:'Check the script and voice settings.'},400)}}
+
  try{await write('claims/'+pass.id+'/'+f,{time:Date.now()})}catch{return reply({error:'This test is already reserved or storage is unavailable. Refresh to see the result.'},409)}
  let result
  try{
- if(f==='voice'){const r=await renderSpeech(voice,env.OPENAI_API_KEY);if(!r.ok)throw Error();await put(root+'audio/'+pass.id+'.mp3',await r.arrayBuffer(),{access:'private',contentType:'audio/mpeg'});result={state:'ready'}}
+ if(f==='voice'){const r=await renderSpeech(voice,env.OPENAI_API_KEY);if(!r.ok)throw Error('OpenAI returned HTTP '+r.status+'. Check the audio API key, quota and billing.');await put(root+'audio/'+pass.id+'.mp3',await r.arrayBuffer(),{access:'private',contentType:'audio/mpeg'});result={state:'ready'}}
+ else if(f==='reverse'){result={state:'ready',breakdown:await analyzePost({key:env.GEMINI_API_KEY,model:env.GEMINI_MODEL||'gemini-3.5-flash-lite',text,image:screenshot})}}
  else if(f==='prompt'){const p=await directPrompt({key:env.GEMINI_API_KEY,model:env.GEMINI_MODEL||'gemini-3.5-flash-lite',concept:text,ratio:'16:9',duration:'5'});result={state:'ready',text:p.enhancedPrompt}}
  else if(f==='video'){const ref=await createVideoProvider(env.FAL_KEY).submit({prompt:text,duration:'5',ratio:'16:9'});result={state:'submitted',ref}}
- else{const j=await pi('',{model:'Qubico/image-toolkit',task_type:'multi-face-swap',input:{swap_image:source,target_image:target,swap_faces_index:'0',target_faces_index:'0'}});if(!/^[a-zA-Z0-9-]{1,100}$/.test(j.task_id))throw Error();result={state:'submitted',ref:j.task_id}}
+ else{const j=await pi('',{model:'Qubico/image-toolkit',task_type:'multi-face-swap',input:{swap_image:source,target_image:target,swap_faces_index:'0',target_faces_index:'0'}});if(typeof j.task_id!=='string'||!/^[a-zA-Z0-9-]{1,100}$/.test(j.task_id))throw Error();result={state:'submitted',ref:j.task_id}}
  }catch(error){if(f==='video'){
  result={state:'review',reason:error instanceof VideoProviderError?'provider':'unconfirmed',message:error instanceof VideoProviderError?error.message:'Vistora did not receive a video request ID. The owner can check this attempt under Issued passes.'}
- }else result={state:'review',message:'The provider did not return a confirmed result. Ask the owner to review before retrying.'}}
+ }else result={state:'review',message:error instanceof Error&&/^(OpenAI|Gemini|PiAPI) returned HTTP \d{3}\./.test(error.message)?error.message:'The provider did not confirm this request. The owner can review it before another run.'}}
  await write(statusPath(f),result);return reply(result)
  }catch{return reply({error:'The request could not be completed. Please check again.'},503)}
 }

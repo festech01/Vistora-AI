@@ -50,7 +50,7 @@ export default function CustomerAccounts() {
         {row.grant&&<p>{row.grant.features.join(', ')} · Ends {new Date(row.grant.expiry).toLocaleString()}</p>}
         <form onSubmit={event=>{event.preventDefault();const f=new FormData(event.currentTarget);if(window.confirm('Give one free use of each selected tool? Your provider account covers the cost.'))save(row.id,{action:'grant',features:f.getAll('feature'),days:Number(f.get('days'))})}}>
           <p>Choose one free use of each tool. A new grant replaces the previous allowance.</p>
-          {[['prompt','Scene writer'],['voice','Voice recording'],['photo','Photo face swap'],['video','Five second video']].map(([key,label])=><label className="choice" key={key}><input type="checkbox" name="feature" value={key}/>{label}</label>)}
+          {[['reverse','Reverse Engineer'],['prompt','Scene writer'],['voice','Voice recording'],['photo','Photo face swap'],['video','Five second video']].map(([key,label])=><label className="choice" key={key}><input type="checkbox" name="feature" value={key}/>{label}</label>)}
           <label>Expires in <select name="days" defaultValue="7"><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option></select></label>
           <button disabled={busy||row.paused} className="outline">Grant free access</button>
         </form>

@@ -1,4 +1,4 @@
-const voices=['marin','cedar','coral','onyx']
+const voices=['alloy','marin','cedar','coral','onyx']
 const tones=['Natural','Warm','Calm','Lively']
 export function speechInput(value){
  const text=typeof value?.text==='string'?value.text.trim():''
