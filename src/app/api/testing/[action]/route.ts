@@ -1,6 +1,7 @@
 import {NextRequest,NextResponse} from 'next/server'
 import {get,put,list} from '@vercel/blob'
 import {randomUUID,createHash} from 'node:crypto'
+import {customer} from '../../../../core/community'
 import sharp from 'sharp'
 import {equal,sign,verify,features} from '../../../../core/test-access.mjs'
 import {renderSpeech,speechInput} from '../../../../../integrations/speech.mjs'
@@ -30,7 +31,14 @@ export async function POST(req:NextRequest,ctx:Context){
  const body=await req.text();if(body.length>1000000)return reply({error:'File too large.'},413);const d=JSON.parse(body)
  if(action==='logout'){const r=reply({ok:true});r.cookies.delete(d.owner===true?'__Host-vistora-owner':cookie);return r}
  if(action==='owner'){if(!equal(d.code,env.VISTORA_OWNER_ACCESS))return reply({error:'Incorrect owner code.'},401);return session('owner',ownerId(),Date.now()+4*3600000)}
- const token=verify(action==='redeem'?d.code:req.cookies.get(['manage','invite','revoke','videoReview'].includes(action)?'__Host-vistora-owner':cookie)?.value,env.VISTORA_SESSION_SECRET)
+ let sponsoredPass
+ if(d.sponsored===true&&['workspace','audio','run','check'].includes(action)){
+   const user=await customer(req)
+   const grant=user?.app_metadata?.studio_grant
+   if(!grant||grant.expiry<=Date.now())return reply({error:'Your account has no active free access. Sign in on the home page or contact the owner.'},403)
+   sponsoredPass={id:grant.id,expiry:grant.expiry,features:grant.features,name:user?.email}
+ }
+ const token=sponsoredPass?{role:'tester',id:sponsoredPass.id}:verify(action==='redeem'?d.code:req.cookies.get(['manage','invite','revoke','videoReview'].includes(action)?'__Host-vistora-owner':cookie)?.value,env.VISTORA_SESSION_SECRET)
  if(!token)return reply({error:'Sign in to continue.'},401)
  if(token.role==='owner'&&token.id===ownerId()&&action!=='redeem'){
  if(action==='videoReview'&&typeof d.id==='string'&&/^[a-f0-9-]{36}$/.test(d.id)){
@@ -53,7 +61,7 @@ export async function POST(req:NextRequest,ctx:Context){
  if(action==='revoke'&&/^[a-f0-9-]{36}$/.test(d.id)){if(!await read('revoked/'+d.id))await write('revoked/'+d.id,{time:Date.now()});return reply({ok:true})}
  }
  if((action==='redeem'?token.role!=='invite':token.role!=='tester'))return reply({error:'Access denied.'},403)
- const pass=await read('passes/'+token.id)
+ const pass=sponsoredPass||await read('passes/'+token.id)
  if(!pass||pass.expiry<=Date.now()||await read('revoked/'+token.id))return reply({error:'This test pass has expired or was revoked.'},403)
  if(action==='redeem')return session('tester',token.id,pass.expiry)
  const statusPath=(f:string)=>'results/'+pass.id+'/'+f
